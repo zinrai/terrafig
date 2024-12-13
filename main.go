@@ -16,8 +16,14 @@ type Node struct {
 	Type       string
 	Name       string
 	Path       string
-	References map[string][]string // var, module, data, resource etc...
+	References map[string][]Reference // Changed from map[string][]string to store file paths
 	Depth      int
+}
+
+// New struct to store both reference ID and its file path
+type Reference struct {
+	ID   string
+	Path string
 }
 
 type Graph struct {
@@ -92,8 +98,8 @@ func traverseNode(graph *Graph, basePath string, nodeID string, depth int, proce
 
 	for category, refs := range node.References {
 		for _, ref := range refs {
-			if !strings.HasPrefix(ref, "var.") && !strings.HasPrefix(ref, "local.") {
-				traverseNode(graph, basePath, ref, depth+1, processedNodes)
+			if !strings.HasPrefix(ref.ID, "var.") && !strings.HasPrefix(ref.ID, "local.") {
+				traverseNode(graph, basePath, ref.ID, depth+1, processedNodes)
 			}
 		}
 		fmt.Printf("Found %s references for %s: %v\n", category, nodeID, refs)
@@ -157,7 +163,7 @@ func findResourceNode(basePath string, nodeID string) (Node, bool) {
 
 			if currentID == nodeID {
 				fmt.Printf("Found matching block: %s\n", currentID)
-				refs := extractReferences(block)
+				refs := extractReferences(block, file)
 				return Node{
 					ID:         currentID,
 					Type:       block.Type,
@@ -173,8 +179,8 @@ func findResourceNode(basePath string, nodeID string) (Node, bool) {
 	return Node{}, false
 }
 
-func extractReferences(block *hcl.Block) map[string][]string {
-	refs := make(map[string][]string)
+func extractReferences(block *hcl.Block, filePath string) map[string][]Reference {
+	refs := make(map[string][]Reference)
 	attrs, _ := block.Body.JustAttributes()
 
 	for name, attr := range attrs {
@@ -193,15 +199,20 @@ func extractReferences(block *hcl.Block) map[string][]string {
 			}
 
 			prefix := parts[0]
+			reference := Reference{
+				ID:   ref,
+				Path: filePath,
+			}
+
 			switch prefix {
 			case "var":
-				refs["variable"] = appendUnique(refs["variable"], ref)
+				refs["variable"] = appendUniqueReference(refs["variable"], reference)
 			case "module":
-				refs["module"] = appendUnique(refs["module"], ref)
+				refs["module"] = appendUniqueReference(refs["module"], reference)
 			case "data":
-				refs["data"] = appendUnique(refs["data"], ref)
+				refs["data"] = appendUniqueReference(refs["data"], reference)
 			default:
-				refs["resource"] = appendUnique(refs["resource"], ref)
+				refs["resource"] = appendUniqueReference(refs["resource"], reference)
 			}
 		}
 	}
@@ -226,9 +237,9 @@ func traversalToReference(traversal hcl.Traversal) string {
 	return strings.Join(parts, ".")
 }
 
-func appendUnique(slice []string, element string) []string {
+func appendUniqueReference(slice []Reference, element Reference) []Reference {
 	for _, existing := range slice {
-		if existing == element {
+		if existing.ID == element.ID {
 			return slice
 		}
 	}
@@ -266,46 +277,36 @@ func generateDOT(graph Graph) string {
 		if node.Depth == 0 {
 			// variable ref
 			for _, ref := range node.References["variable"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
-					ref, ref, colors["variable"]))
+				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\\n(%s)\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
+					ref.ID, ref.ID, ref.Path, colors["variable"]))
 			}
 			// module ref
 			for _, ref := range node.References["module"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
-					ref, ref, colors["module"]))
+				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\\n(%s)\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
+					ref.ID, ref.ID, ref.Path, colors["module"]))
 			}
 			// data ref
 			for _, ref := range node.References["data"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
-					ref, ref, colors["data"]))
+				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\\n(%s)\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
+					ref.ID, ref.ID, ref.Path, colors["data"]))
 			}
 			// resource ref
 			for _, ref := range node.References["resource"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
-					ref, ref, colors["resource"]))
+				builder.WriteString(fmt.Sprintf("  \"%s\" [label=\"%s\\n(%s)\", fillcolor=\"%s\", style=\"filled,rounded\"];\n",
+					ref.ID, ref.ID, ref.Path, colors["resource"]))
 			}
 		}
 	}
 
 	builder.WriteString("\n  // Dependencies\n")
-	// Append edges
+	// Append edges with solid lines only
 	for _, node := range graph.Nodes {
 		if node.Depth == 0 {
-			// variable depth
-			for _, ref := range node.References["variable"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" -> \"%s\" [style=dotted];\n", ref, node.ID))
-			}
-			// module depth
-			for _, ref := range node.References["module"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" -> \"%s\" [style=dashed];\n", ref, node.ID))
-			}
-			// data depth
-			for _, ref := range node.References["data"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" -> \"%s\" [style=dashdot];\n", ref, node.ID))
-			}
-			// resource depth
-			for _, ref := range node.References["resource"] {
-				builder.WriteString(fmt.Sprintf("  \"%s\" -> \"%s\" [style=solid];\n", ref, node.ID))
+			// All references now use solid lines to avoid the dashdot warning
+			for _, refs := range node.References {
+				for _, ref := range refs {
+					builder.WriteString(fmt.Sprintf("  \"%s\" -> \"%s\" [style=solid];\n", ref.ID, node.ID))
+				}
 			}
 		}
 	}
